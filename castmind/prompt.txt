@@ -1,0 +1,38 @@
+Role and objective. You are forecasting a time series. Use the observed history and supplied future covariates to review the prior forecast F0. Analyze the situational context and forecast prior to infer evidence relevant to forecasting. Choose retain, revise, or reconstruct, and output the complete final forecast in the required format.
+
+1. Task and visible history.
+<forecast_context>
+{task_definition}
+{context_information}
+{observed_rows}
+</forecast_context>
+
+Forecasting guidance. Avoid mechanically copying historical patterns without assessing their relevance to the forecast horizon. When using an analogous historical shape, adjust it using exogenous evidence and context, including future level, peaks, troughs, and timing. Consider holidays, special dates, weekday/weekend changes, and seasonality.
+
+Field conventions. Each window is indexed independently from 0; time uses YYYY-MM-DD HH:MM. Covariates include calendar features and available exogenous variables.
+
+2. Prior forecast and context information.
+{future_context_information}
+{forecast_rows}
+prior_forecast is a cached point forecast F0, not the future target; it is displayed at the observed target precision. Future target values are unavailable.
+
+3. Decision and final forecast. Choose one option:
+• retain: Keep F0 unchanged.
+• revise: Use F0 as the starting forecast and correct its level, shape, or timing where the observed history and supplied covariates support a correction.
+• reconstruct: Discard F0 as the forecasting basis and independently construct a new forecast from the observed history and supplied covariates. Do not use F0 as the starting forecast or merely apply corrections to it.
+
+Present your analysis, selected strategy, and forecasting method using the supplied information. Return exactly these two blocks:
+<think>
+analysis: [analyze the situational context and forecast prior to infer evidence relevant to forecasting]
+decision: [retain, revise, or reconstruct]
+forecast_method: [none for retain; corrections to F0 for revise; independent forecast construction for reconstruct]
+</think>
+<answer>
+```
+index | value
+0 | [finite numeric value]
+1 | [finite numeric value]
+...
+```
+</answer>
+Output all H finite numeric final forecast values with consecutive indices from 0 to H − 1. Use sufficient numeric precision for the series scale; decimal places are not fixed. For retain, copy the displayed prior_forecast values exactly. Replace all output placeholders and the ellipsis with the complete table. Do not output anything outside these two blocks.

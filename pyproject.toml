@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "castmind"
+version = "0.1.0"
+description = "Core supervised and GRPO training for evidence-grounded time series forecasting"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.24,<3",
+  "pandas>=2",
+  "pyarrow>=19",
+  "PyYAML>=6",
+  "omegaconf>=2.3",
+  "hydra-core>=1.3,<2",
+]
+
+[project.optional-dependencies]
+train = [
+  "verl @ git+https://github.com/verl-project/verl.git@061053139d598cfc172fac10db610d91a61be3e7",
+  "torch>=2.10",
+  "transformers>=5.3",
+  "vllm>=0.20",
+  "sentence-transformers>=5.3",
+]
+dev = ["pytest>=8", "build>=1"]
+
+[tool.setuptools.packages.find]
+include = ["castmind*"]
+
+[tool.setuptools.package-data]
+castmind = ["prompt.txt", "configs/*.yaml"]
