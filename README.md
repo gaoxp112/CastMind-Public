@@ -50,3 +50,7 @@ python -m castmind.train grpo \
 ```
 
 Add `--check-only` to validate inputs before training, or `--dry-run` to inspect the configuration. Stage settings are in [castmind/configs](castmind/configs), and the shared forecasting prompt is in [castmind/prompt.txt](castmind/prompt.txt).
+
+## Offline SAD and teacher forcing
+
+The paper's student-aware difficulty calculation is available as an independent utility in [castmind/sad.py](castmind/sad.py). `score_teacher_response` teacher-forces a complete teacher response through a frozen student, records token log-probabilities and vocabulary ranks for the visible `analysis`, `decision`, and `forecast_method` fields, and computes the field-balanced SAD score. `select_trajectory` applies the paper's MAE tolerance and same-strategy SAD tie-break. These utilities do not modify either training stage; call them from an offline trajectory-preparation script.
