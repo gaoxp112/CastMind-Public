@@ -20,12 +20,15 @@ dependencies = [
 [project.optional-dependencies]
 train = [
   "verl @ git+https://github.com/verl-project/verl.git@061053139d598cfc172fac10db610d91a61be3e7",
-  "torch>=2.10",
-  "transformers>=5.3",
-  "vllm>=0.20",
-  "sentence-transformers>=5.3",
+  "torch==2.10.0",
+  "transformers==5.3.0",
+  "vllm==0.18.1",
+  "flash-attn==2.8.3",
+  "flash-linear-attention==0.5.2",
+  "sentence-transformers==5.3.0",
 ]
 dev = ["pytest>=8", "build>=1"]
+example = ["chronos-forecasting==2.3.2"]
 
 [tool.setuptools.packages.find]
 include = ["castmind*"]

@@ -132,14 +132,34 @@ def score_teacher_response(
     ))
     if not prompt_ids or full_ids[:len(prompt_ids)] != prompt_ids:
         raise ValueError("teacher response tokens do not share the tokenizer prompt prefix")
-    response_ids = full_ids[len(prompt_ids):]
-    encoded = tokenizer(response, add_special_tokens=False, return_offsets_mapping=True)
+    # Offsets must describe the complete rendered conversation. Qwen owns the
+    # opening <think> in the generation prompt and appends end-of-turn tokens;
+    # standalone response IDs cannot be compared with that continuation.
+    prompt_text = tokenizer.apply_chat_template(
+        list(messages), tokenize=False, add_generation_prompt=True, enable_thinking=True,
+    )
+    full_text = tokenizer.apply_chat_template(
+        [*messages, {"role": "assistant", "content": response}],
+        tokenize=False, add_generation_prompt=False, enable_thinking=True,
+    )
+    if not full_text.startswith(prompt_text):
+        raise ValueError("rendered teacher conversation does not share the prompt prefix")
+    assistant_start = len(prompt_text)
+    if prompt_text.endswith("<think>\n"):
+        assistant_start -= len("<think>\n")
+    spans = _reasoning_spans(full_text[assistant_start:])
+    original_spans = _reasoning_spans(response)
+    for field, (lo, hi) in spans.items():
+        old_lo, old_hi = original_spans[field]
+        if full_text[assistant_start + lo:assistant_start + hi] != response[old_lo:old_hi]:
+            raise ValueError("chat template changed a visible reasoning field")
+    spans = {field: (assistant_start + lo, assistant_start + hi) for field, (lo, hi) in spans.items()}
+    encoded = tokenizer(full_text, add_special_tokens=False, return_offsets_mapping=True)
     local_ids = _ids(encoded.get("input_ids") if isinstance(encoded, Mapping) else encoded.input_ids)
     offsets = encoded.get("offset_mapping") if isinstance(encoded, Mapping) else encoded.offset_mapping
     offsets = _plain_offsets(offsets)
-    if local_ids != response_ids or len(offsets) != len(response_ids):
-        raise ValueError("response tokenization differs from the chat-template suffix")
-    spans = _reasoning_spans(response)
+    if local_ids != full_ids or len(offsets) != len(full_ids):
+        raise ValueError("rendered text tokenization differs from the chat template")
     token_fields = []
     for start, end in offsets:
         field = next((name for name, (lo, hi) in spans.items() if start < hi and end > lo), None)
@@ -161,10 +181,9 @@ def score_teacher_response(
         raise ValueError("student model returned logits with an incompatible shape")
 
     forced = []
-    for local_index, (token_id, field) in enumerate(zip(response_ids, token_fields, strict=True)):
-        if field is None:
+    for full_index, (token_id, field) in enumerate(zip(full_ids, token_fields, strict=True)):
+        if field is None or full_index < len(prompt_ids):
             continue
-        full_index = len(prompt_ids) + local_index
         if full_index == 0:
             raise ValueError("first forced token has no preceding context")
         distribution = logits[0, full_index - 1]
@@ -231,6 +250,8 @@ def _reasoning_spans(response: str) -> dict[str, tuple[int, int]]:
 
 
 def _ids(value: Any) -> list[int]:
+    if isinstance(value, Mapping):
+        value = value["input_ids"]
     if hasattr(value, "tolist"):
         value = value.tolist()
     if isinstance(value, Sequence) and value and isinstance(value[0], Sequence):

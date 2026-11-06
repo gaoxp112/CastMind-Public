@@ -1,6 +1,8 @@
 """Tests for offline SAD scoring and teacher-forcing selection."""
 
 import torch
+import os
+import pytest
 
 from castmind.sad import (
     SADScore,
@@ -84,3 +86,34 @@ def test_selection_uses_sad_only_for_close_same_strategy_candidates():
     assert select_trajectory([
         candidates[0], TrajectoryCandidate("too_far", "revise", 1.04, _sad(0.1)),
     ]).candidate_id == "accurate"
+
+
+@pytest.mark.skipif(not os.environ.get("CASTMIND_TEST_TOKENIZER"), reason="set CASTMIND_TEST_TOKENIZER")
+def test_teacher_forcing_real_qwen_tokenizer_includes_chat_boundaries():
+    from transformers import AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained(os.environ["CASTMIND_TEST_TOKENIZER"], local_files_only=True)
+
+    class Uniform(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.anchor = torch.nn.Parameter(torch.zeros(1))
+            self.seen_ids = None
+
+        def forward(self, input_ids):
+            self.seen_ids = input_ids.clone()
+            # Expanded views avoid allocating a full sequence×vocabulary tensor.
+            logits = torch.zeros(1, 1, len(tokenizer)).expand(1, input_ids.shape[1], -1)
+            return type("Output", (), {"logits": logits})()
+
+    response = "<think>\nanalysis: evidence\ndecision: revise\nforecast_method: shift\n</think>\n<answer>\n```\nindex | value\n0 | 2\n```\n</answer>"
+    messages = [{"role": "user", "content": "Forecast."}]
+    model = Uniform()
+    score = score_teacher_response(model, tokenizer, messages, response)
+    assert model.training
+    assert {t.field for t in score.tokens} == {"analysis", "decision", "forecast_method"}
+    assert all(t.rank == 1 for t in score.tokens)
+    assert tokenizer.decode(model.seen_ids[0]).endswith("<|im_end|>\n")
+    for field in ("analysis", "decision", "forecast_method"):
+        text = tokenizer.decode([t.token_id for t in score.tokens if t.field == field]).strip()
+        assert text in {"evidence", "revise", "shift"}

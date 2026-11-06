@@ -15,7 +15,7 @@ from omegaconf import OmegaConf
 PACKAGE_DIR = Path(__file__).resolve().parent
 
 
-def compose_config(stage, model, train_file, output_dir, val_file=None):
+def compose_config(stage, model, train_file, output_dir, val_file=None, *, profile="paper", gpus=4, max_steps=None):
     """Resolve our paper defaults against the installed VeRL configuration."""
     with initialize_config_dir(config_dir=str(PACKAGE_DIR / "configs"), version_base=None):
         config = compose(config_name=stage)
@@ -28,12 +28,41 @@ def compose_config(stage, model, train_file, output_dir, val_file=None):
         config.model.path = model
     else:
         config.actor_rollout_ref.model.path = model
-        config.reward.custom_reward_function.path = str(PACKAGE_DIR / "rewards.py")
+        # Import as a registered package: VeRL's anonymous file loader does not
+        # register modules, which breaks dataclasses with postponed annotations.
+        config.reward.custom_reward_function.path = "pkg://castmind.rewards"
+    if profile not in {"paper", "price-example"}:
+        raise ValueError("unknown training profile")
+    if gpus < 1:
+        raise ValueError("gpus must be positive")
+    if profile == "paper" and (gpus != 4 or max_steps is not None):
+        raise ValueError("paper profile preserves four GPUs and the paper epoch budget")
+    config.release_profile = profile
+    if profile == "price-example":
+        config.trainer.n_gpus_per_node = gpus
+        batch_size = ((4 + gpus - 1) // gpus) * gpus
+        config.data.train_batch_size = batch_size
+        if stage == "sft":
+            # Avoid packing multiple long Price windows into one GPU microbatch.
+            config.data.use_dynamic_bsz = False
+        else:
+            config.actor_rollout_ref.actor.ppo_mini_batch_size = batch_size
+            # One small-model GPU example must leave room for actor/reference.
+            config.actor_rollout_ref.rollout.gpu_memory_utilization = 0.35
+            config.actor_rollout_ref.rollout.max_num_seqs = 32
+            config.actor_rollout_ref.actor.fsdp_config.optimizer_offload = True
+            config.ray_kwargs.ray_init.num_cpus = int(os.environ.get("SLURM_CPUS_PER_TASK", "4"))
+            config.reward.num_workers = 1
+            config.actor_rollout_ref.rollout.agent.num_workers = 1
+        if max_steps is not None:
+            if max_steps < 1:
+                raise ValueError("max_steps must be positive")
+            config.trainer.total_training_steps = max_steps
     OmegaConf.resolve(config)
     return config
 
 
-def _validate_file(stage, filename, tokenizer, data_config, training):
+def _validate_file(stage, filename, tokenizer, data_config, training, profile="paper"):
     from collections import Counter
     import pandas as pd
 
@@ -44,7 +73,7 @@ def _validate_file(stage, filename, tokenizer, data_config, training):
     if not path.is_file() or path.suffix != ".parquet":
         raise ValueError(f"supply an existing prepared .parquet file: {path}")
     rows = [_plain(row) for row in pd.read_parquet(path).to_dict(orient="records")]
-    if not rows or (training and len(rows) != 2000):
+    if not rows or (training and profile == "paper" and len(rows) != 2000):
         raise ValueError("training requires exactly 2000 prepared examples; validation must be nonempty")
     domains = Counter()
     has_teachers = False
@@ -58,8 +87,10 @@ def _validate_file(stage, filename, tokenizer, data_config, training):
                 has_teachers |= validate_metadata(row["reward_model"]["ground_truth"], row["extra_info"])
             except (KeyError, TypeError, ValueError) as error:
                 raise ValueError(f"invalid RL reward metadata at row {index}: {error}") from error
-    if training and len(domains) != 8:
+    if training and profile == "paper" and len(domains) != 8:
         raise ValueError("the paper mixture must contain all eight prepared domains")
+    if profile == "price-example" and set(domains) != {"Price"}:
+        raise ValueError("price-example profile requires only the Price domain")
     dataset_cls = PreparedSFTDataset if stage == "sft" else PreparedRLHFDataset
     dataset = dataset_cls(str(path), tokenizer, data_config)
     for index in range(len(dataset)):
@@ -77,10 +108,13 @@ def preflight(stage, config):
             raise ValueError(f"supply an existing prepared .parquet file: {filename}")
     model = config.model.path if stage == "sft" else config.actor_rollout_ref.model.path
     tokenizer = AutoTokenizer.from_pretrained(model, trust_remote_code=False)
-    report, teachers = _validate_file(stage, config.data.train_files, tokenizer, config.data, True)
+    profile = config.get("release_profile", "paper")
+    report, teachers = _validate_file(stage, config.data.train_files, tokenizer, config.data, True, profile)
+    if report["rows"] < config.data.train_batch_size:
+        raise ValueError("training file has fewer rows than train_batch_size")
     if config.data.val_files:
         validation, validation_teachers = _validate_file(
-            stage, config.data.val_files, tokenizer, config.data, False,
+            stage, config.data.val_files, tokenizer, config.data, False, profile,
         )
         report["validation"] = validation
         teachers |= validation_teachers
@@ -92,13 +126,13 @@ def preflight(stage, config):
     return report
 
 
-def launch_command(stage, config_path):
+def launch_command(stage, config_path, gpus=4):
     config_dir = str(PACKAGE_DIR / "configs")
     args = ["--config-path", config_dir, "--config-name", stage]
     # The resolved config includes environment-specific paths without shell interpolation.
     args += [f"+launch_config={json.dumps(str(config_path))}"]
     if stage == "sft":
-        return [sys.executable, "-m", "torch.distributed.run", "--standalone", "--nproc_per_node=4", "-m", "castmind.sft", *args]
+        return [sys.executable, "-m", "torch.distributed.run", "--standalone", f"--nproc_per_node={gpus}", "-m", "castmind.sft", *args]
     return [sys.executable, "-m", "castmind.grpo", *args]
 
 
@@ -109,13 +143,18 @@ def main():
     parser.add_argument("--train-file", required=True)
     parser.add_argument("--val-file", help="prepared validation file (required for GRPO)")
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--profile", choices=["paper", "price-example"], default="paper")
+    parser.add_argument("--gpus", type=int, help="price-example GPU count; paper defaults to four")
+    parser.add_argument("--max-steps", type=int, help="optional bounded price-example smoke run")
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--dry-run", action="store_true", help="compose/print only; do not read models or input files")
     modes.add_argument("--check-only", action="store_true", help="validate prepared files and tokenizer without training")
     args = parser.parse_args()
     if args.stage == "grpo" and not args.val_file:
         parser.error("GRPO requires --val-file because upstream VeRL constructs a validation loader")
-    config = compose_config(args.stage, args.model, args.train_file, args.output_dir, args.val_file)
+    gpus = args.gpus if args.gpus is not None else (1 if args.profile == "price-example" else 4)
+    config = compose_config(args.stage, args.model, args.train_file, args.output_dir, args.val_file,
+                            profile=args.profile, gpus=gpus, max_steps=args.max_steps)
     if args.dry_run:
         print(OmegaConf.to_yaml(config, resolve=True))
         return
@@ -128,7 +167,7 @@ def main():
     config_path = output_dir / "launch.yaml"
     OmegaConf.save(config, config_path, resolve=True)
     (output_dir / "preflight.json").write_text(json.dumps(report, indent=2) + "\n")
-    command = launch_command(args.stage, config_path)
+    command = launch_command(args.stage, config_path, config.trainer.n_gpus_per_node)
     print(shlex.join(command), flush=True)
     environment = dict(os.environ)
     environment["PYTHONPATH"] = str(PACKAGE_DIR.parent) + os.pathsep + environment.get("PYTHONPATH", "")

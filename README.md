@@ -12,6 +12,8 @@ From the repository root:
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
+python -m pip install torch==2.10.0 vllm==0.18.1 packaging ninja
+MAX_JOBS=4 python -m pip install flash-attn==2.8.3 --no-build-isolation
 python -m pip install -e '.[train]'
 ```
 
@@ -24,7 +26,9 @@ export CASTMIND_ENCODER_PATH="$PWD/models/bge-m3"
 
 ## Running CastMind
 
-Provide your own model and prepared Parquet training files compatible with [the dataset adapters](castmind/datasets.py). Data and model weights are not included. The main model is Qwen3.5-9B; Qwen3.5-4B uses the same commands with a different model path.
+Provide your own model and prepared Parquet training files compatible with [the dataset adapters](castmind/datasets.py), or prepare the Price example below. Prepared training data and model weights are not included. The main model is Qwen3.5-9B; Qwen3.5-4B uses the same commands with a different model path.
+
+A runnable [Price example](examples/price/README.md) includes raw CSV observations, CSV-to-Parquet preparation using four configurable teacher APIs, and a single-command SFT → GRPO → inference → evaluation script. After installing `.[train,example]` and configuring the teacher APIs and encoder, run `bash scripts/run_price.sh`.
 
 **1. Supervised fine-tuning**
 

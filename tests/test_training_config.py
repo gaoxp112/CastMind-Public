@@ -24,6 +24,6 @@ def test_grpo_paper_settings_and_five_term_reward():
     assert a.rollout.engine_kwargs.vllm.seed == 42
     assert c.data.apply_chat_template_kwargs.enable_thinking
     assert not c.data.filter_overlong_prompts and c.data.truncation == "error"
-    assert c.reward.custom_reward_function.path.endswith("castmind/rewards.py")
+    assert c.reward.custom_reward_function.path == "pkg://castmind.rewards"
     assert c.reward.custom_reward_function.name == "compute_score"
     assert c.trainer.save_freq > 0

@@ -1,0 +1,2 @@
+recursive-include examples/price *.md *.csv *.example.json
+include scripts/run_price.sh
